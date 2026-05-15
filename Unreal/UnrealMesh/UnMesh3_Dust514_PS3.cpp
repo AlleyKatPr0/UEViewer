@@ -41,7 +41,7 @@ bool IsDust514Ps3Mesh(const UObject* Object)
 
 static bool IsDust514Ps3CharacterMesh(const UObject* MeshObject)
 {
-	return MeshObject && MeshObject->Name && strlen(MeshObject->Name) >= 3 && !strncmp(MeshObject->Name, "CH_", 3);
+	return MeshObject && MeshObject->Name && !strncmp(MeshObject->Name, "CH_", 3);
 }
 
 static const int* GetDust514Ps3PositionComponentPerm(const UObject* MeshObject)
@@ -183,9 +183,10 @@ void NormalizeDust514Ps3Fixed8Weights(const byte InWeights[4], byte OutWeights[4
 
 	int LastNonZero = -1;
 	int OutputSum = 0;
+	const float Scale = 255.0f / Sum;
 	for (int i = 0; i < 4; i++)
 	{
-		int Weight = appRound((float)InWeights[i] * 255.0f / Sum);
+		int Weight = appRound(InWeights[i] * Scale);
 		if (Weight < 0) Weight = 0;
 		if (Weight > 255) Weight = 255;
 		OutWeights[i] = Weight;
