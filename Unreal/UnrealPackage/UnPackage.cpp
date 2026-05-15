@@ -112,6 +112,8 @@ bool FPackageFileSummary::Serialize(FArchive &Ar)
 		}
 		Ar.ReverseBytes = true;
 		Tag = PACKAGE_FILE_TAG;
+		if (Ar.Platform == PLATFORM_PS3 || GForcePlatform == PLATFORM_PS3)
+			Ar.Platform = PLATFORM_PS3;
 	}
 
 	// read version

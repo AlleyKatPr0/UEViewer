@@ -5,6 +5,7 @@
 #include "UnCore.h"
 #include "UnObject.h"
 #include "UnMesh3.h"
+#include "UnMesh3_Dust514_PS3.h"
 #include "UnMeshTypes.h"
 #include "UnMathTools.h"			// for FRotator to FCoords
 
@@ -2114,6 +2115,7 @@ void USkeletalMesh3::ConvertMesh()
 	ConvertedMesh = Mesh;
 
 	int ArGame = GetGame();
+	const bool bDust514Ps3 = IsDust514Ps3Mesh(this);
 
 #if MKVSDC
 	if (ArGame == GAME_MK && Skeleton != NULL && RefSkeleton.Num() == 0)
@@ -2139,13 +2141,16 @@ void USkeletalMesh3::ConvertMesh()
 	}
 
 	// convert bounds
-	Mesh->BoundingSphere.R = Bounds.SphereRadius / 2;		//?? UE3 meshes has radius 2 times larger than mesh
-	VectorSubtract(CVT(Bounds.Origin), CVT(Bounds.BoxExtent), CVT(Mesh->BoundingBox.Min));
-	VectorAdd     (CVT(Bounds.Origin), CVT(Bounds.BoxExtent), CVT(Mesh->BoundingBox.Max));
+	const FBoxSphereBounds MeshBounds = bDust514Ps3 ? TransformDust514Ps3Bounds(this, Bounds) : Bounds;
+	Mesh->BoundingSphere.R = MeshBounds.SphereRadius / 2;		//?? UE3 meshes has radius 2 times larger than mesh
+	VectorSubtract(CVT(MeshBounds.Origin), CVT(MeshBounds.BoxExtent), CVT(Mesh->BoundingBox.Min));
+	VectorAdd     (CVT(MeshBounds.Origin), CVT(MeshBounds.BoxExtent), CVT(Mesh->BoundingBox.Max));
 
 	// MeshScale, MeshOrigin, RotOrigin
-	VectorScale(CVT(MeshOrigin), -1, Mesh->MeshOrigin);
-	Mesh->RotOrigin = RotOrigin;
+	FVector MeshOriginForMesh = bDust514Ps3 ? TransformDust514Ps3Position(this, MeshOrigin) : MeshOrigin;
+	FRotator RotOriginForMesh = bDust514Ps3 ? TransformDust514Ps3Rotator(this, RotOrigin) : RotOrigin;
+	VectorScale(CVT(MeshOriginForMesh), -1, Mesh->MeshOrigin);
+	Mesh->RotOrigin = RotOriginForMesh;
 	Mesh->MeshScale.Set(1, 1, 1);							// missing in UE3
 
 	// convert LODs
@@ -2271,13 +2276,26 @@ void USkeletalMesh3::ConvertMesh()
 				}
 				// convert Normal[3]
 				UnpackNormals(V->Normal, *D);
+				if (bDust514Ps3)
+					TransformDust514Ps3Vertex(this, *D);
 				// convert influences
 				int i2 = 0;
 				unsigned PackedWeights = 0;
+				byte Weights[NUM_INFLUENCES_UE3];
+				if (bDust514Ps3)
+				{
+					NormalizeDust514Ps3Fixed8Weights(V->BoneWeight, Weights);
+					if (memcmp(Weights, V->BoneWeight, sizeof(Weights)))
+						NumReweightedVerts++;
+				}
+				else
+				{
+					memcpy(Weights, V->BoneWeight, sizeof(Weights));
+				}
 				for (int i = 0; i < NUM_INFLUENCES_UE3; i++)
 				{
 					int BoneIndex  = V->BoneIndex[i];
-					byte BoneWeight = V->BoneWeight[i];
+					byte BoneWeight = Weights[i];
 					if (BoneWeight == 0) continue;				// skip this influence (but do not stop the loop!)
 					PackedWeights |= BoneWeight << (i2 * 8);
 					D->Bone[i2]   = C->Bones[BoneIndex];
@@ -2298,6 +2316,8 @@ void USkeletalMesh3::ConvertMesh()
 					// position and normal
 					D->Position = CVT(V0.Pos);
 					UnpackNormals(V0.Normal, *D);
+					if (bDust514Ps3)
+						TransformDust514Ps3Vertex(this, *D);
 					// single influence
 					D->PackedWeights = 0xFF;
 					D->Bone[0]   = C->Bones[V0.BoneIndex];
@@ -2310,14 +2330,27 @@ void USkeletalMesh3::ConvertMesh()
 					// position and normal
 					D->Position = CVT(V0.Pos);
 					UnpackNormals(V0.Normal, *D);
+					if (bDust514Ps3)
+						TransformDust514Ps3Vertex(this, *D);
 					// influences
 //					int TotalWeight = 0;
 					int i2 = 0;
 					unsigned PackedWeights = 0;
+					byte Weights[NUM_INFLUENCES_UE3];
+					if (bDust514Ps3)
+					{
+						NormalizeDust514Ps3Fixed8Weights(V0.BoneWeight, Weights);
+						if (memcmp(Weights, V0.BoneWeight, sizeof(Weights)))
+							NumReweightedVerts++;
+					}
+					else
+					{
+						memcpy(Weights, V0.BoneWeight, sizeof(Weights));
+					}
 					for (int i = 0; i < NUM_INFLUENCES_UE3; i++)
 					{
 						int BoneIndex  = V0.BoneIndex[i];
-						byte BoneWeight = V0.BoneWeight[i];
+						byte BoneWeight = Weights[i];
 						if (BoneWeight == 0) continue;
 						PackedWeights |= BoneWeight << (i2 * 8);
 						D->Bone[i2]   = C->Bones[BoneIndex];
@@ -2379,10 +2412,12 @@ void USkeletalMesh3::ConvertMesh()
 	{
 		const FMeshBone &B = RefSkeleton[i];
 		CSkelMeshBone *Dst = new (Mesh->RefSkeleton) CSkelMeshBone;
+		FVector BonePosition = bDust514Ps3 ? TransformDust514Ps3Position(this, B.BonePos.Position) : B.BonePos.Position;
+		FQuat BoneOrientation = bDust514Ps3 ? TransformDust514Ps3Rotation(this, B.BonePos.Orientation) : B.BonePos.Orientation;
 		Dst->Name        = B.Name;
 		Dst->ParentIndex = B.ParentIndex;
-		Dst->Position    = CVT(B.BonePos.Position);
-		Dst->Orientation = CVT(B.BonePos.Orientation);
+		Dst->Position    = CVT(BonePosition);
+		Dst->Orientation = CVT(BoneOrientation);
 #if !BAKE_BONE_SCALES
 		Dst->Scale.Set(1, 1, 1);
 #endif
@@ -2420,11 +2455,13 @@ void USkeletalMesh3::PostLoad()
 			USkeletalMeshSocket *S = Sockets[i];
 			if (!S) continue;
 			CSkelMeshSocket& DS = ConvertedMesh->Sockets.AddZeroed_GetRef();
+			FVector SocketPosition = IsDust514Ps3Mesh(this) ? TransformDust514Ps3Position(this, S->RelativeLocation) : S->RelativeLocation;
+			FRotator SocketRotation = IsDust514Ps3Mesh(this) ? TransformDust514Ps3Rotator(this, S->RelativeRotation) : S->RelativeRotation;
 			DS.Name = S->SocketName;
 			DS.Bone = S->BoneName;
 			CCoords& C = DS.Transform;
-			C.origin = CVT(S->RelativeLocation);
-			RotatorToAxis(S->RelativeRotation, C.axis);
+			C.origin = CVT(SocketPosition);
+			RotatorToAxis(SocketRotation, C.axis);
 		}
 	}
 
