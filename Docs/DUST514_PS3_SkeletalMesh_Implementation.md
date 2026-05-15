@@ -87,6 +87,16 @@ static bool DecodeDustEdgeIndexBlock(
 
 This function should be isolated so it can be tested independently against known DUST `.MSH` page payloads.
 
+Current implementation lives in:
+
+- `Unreal/UnrealMesh/UnMesh3_Dust514_PS3.cpp`
+- `Unreal/UnrealMesh/UnMesh3_Dust514_PS3.h`
+
+Notes:
+
+- `FDust514Ps3SkeletalMeshDecoder::DecodeEdgeIndexBlock(...)` expects the inline Edge header+seeds format, but will also scan the first 64 bytes for a valid inner header when the wrapper prefixes the payload with page metadata.
+- If the `.MSH` page table stores `bitsPerIndex`, `deltaOffset`, and seed indices externally (not inline), use `FDust514Ps3SkeletalMeshDecoder::DecodeEdgeIndexPayload(...)` with the extracted header fields and pass only the bit-packed delta payload.
+
 ### 4. Fixed8 skin record decode
 
 DUST skinning uses fixed8 records. Treat each vertex as four influences:

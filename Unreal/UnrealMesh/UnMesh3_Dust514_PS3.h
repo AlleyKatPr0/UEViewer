@@ -13,6 +13,14 @@
 
 namespace Dust514Ps3
 {
+	struct FEdgeIndexBlockHeader
+	{
+		uint32_t BitsPerIndex = 0;
+		uint32_t DeltaOffset = 0;
+		uint32_t Seeds[8] = { 0,0,0,0,0,0,0,0 };
+		uint32_t SeedCount = 0;
+	};
+
 	struct FVector3
 	{
 		float X = 0.0f;
@@ -107,6 +115,18 @@ namespace Dust514Ps3
 			size_t DataSize,
 			uint32_t IndexCount,
 			uint32_t VertexLimit,
+			std::vector<uint32_t>& OutIndices,
+			FDecodeError* OutError = nullptr
+		);
+
+		// Decode a bit-packed delta payload when the wrapper supplies the Edge header separately.
+		// DeltaData points at the first delta bit (high-order packed), not at the inline header.
+		static bool DecodeEdgeIndexPayload(
+			const uint8_t* DeltaData,
+			size_t DeltaDataSize,
+			uint32_t IndexCount,
+			uint32_t VertexLimit,
+			const FEdgeIndexBlockHeader& Header,
 			std::vector<uint32_t>& OutIndices,
 			FDecodeError* OutError = nullptr
 		);
