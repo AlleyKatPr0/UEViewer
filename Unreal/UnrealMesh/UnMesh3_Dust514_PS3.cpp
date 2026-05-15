@@ -41,7 +41,7 @@ bool IsDust514Ps3Mesh(const UObject* Object)
 
 static bool IsDust514Ps3CharacterMesh(const UObject* MeshObject)
 {
-	return MeshObject && MeshObject->Name && !strncmp(MeshObject->Name, "CH_", 3);
+	return MeshObject && MeshObject->Name && strlen(MeshObject->Name) >= 3 && !strncmp(MeshObject->Name, "CH_", 3);
 }
 
 static const int* GetDust514Ps3PositionComponentPerm(const UObject* MeshObject)

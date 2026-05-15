@@ -2447,6 +2447,7 @@ void USkeletalMesh3::PostLoad()
 	assert(ConvertedMesh);
 
 	int NumSockets = Sockets.Num();
+	const bool bDust514Ps3 = IsDust514Ps3Mesh(this);
 	if (NumSockets)
 	{
 		ConvertedMesh->Sockets.Empty(NumSockets);
@@ -2455,8 +2456,8 @@ void USkeletalMesh3::PostLoad()
 			USkeletalMeshSocket *S = Sockets[i];
 			if (!S) continue;
 			CSkelMeshSocket& DS = ConvertedMesh->Sockets.AddZeroed_GetRef();
-			FVector SocketPosition = IsDust514Ps3Mesh(this) ? TransformDust514Ps3Position(this, S->RelativeLocation) : S->RelativeLocation;
-			FRotator SocketRotation = IsDust514Ps3Mesh(this) ? TransformDust514Ps3Rotator(this, S->RelativeRotation) : S->RelativeRotation;
+			FVector SocketPosition = bDust514Ps3 ? TransformDust514Ps3Position(this, S->RelativeLocation) : S->RelativeLocation;
+			FRotator SocketRotation = bDust514Ps3 ? TransformDust514Ps3Rotator(this, S->RelativeRotation) : S->RelativeRotation;
 			DS.Name = S->SocketName;
 			DS.Bone = S->BoneName;
 			CCoords& C = DS.Transform;
