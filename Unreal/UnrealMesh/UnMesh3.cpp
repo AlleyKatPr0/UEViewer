@@ -2090,7 +2090,20 @@ after_skeleton:
 		Ar << unk108 << unk10C;
 	}
 #endif
+#if DUST514
+	// DUST 514 PS3 skeletal meshes store geometry in streamed `.MSH` wrapper/page data rather than
+	// inline UE3 `FStaticLODModel3` structures. Attempting to deserialize `LODModels` as if it was a
+	// normal UE3 PC/X360 mesh will quickly desync and may trigger "Serializing behind stopper".
+	if (Ar.Game == GAME_Dust514 && Ar.Platform == PLATFORM_PS3 && Ar.ArLicenseeVer >= 35)
+	{
+		appPrintf("DUST514/PS3: SkeletalMesh3'%s' uses streamed .MSH wrapper geometry; skipping inline LODModels\n", Name);
+		DROP_REMAINING_DATA(Ar);
+		return;
+	}
+#endif
+
 	Ar << LODModels;
+
 #if 0
 	//!! also: NameIndexMap (ArVer >= 296), PerPolyKDOPs (ArVer >= 435)
 #else
@@ -2150,6 +2163,25 @@ void USkeletalMesh3::ConvertMesh()
 
 	// convert LODs
 	Mesh->Lods.Empty(LODModels.Num());
+#if DUST514
+	if (ArGame == GAME_Dust514)
+	{
+		const FArchive* PackageAr = GetPackageArchive();
+		if (PackageAr && PackageAr->Platform == PLATFORM_PS3)
+		{
+			if (LODModels.Num() == 0)
+			{
+				appNotify("DUST514/PS3 SkeletalMesh3'%s': geometry is stored in streamed .MSH wrapper data and is not decoded yet", Name);
+				return;
+			}
+			if (LODModels.Num() != LODInfo.Num())
+			{
+				appNotify("DUST514/PS3 SkeletalMesh3'%s': LODModels/LODInfo mismatch (%d vs %d)", Name, LODModels.Num(), LODInfo.Num());
+				return;
+			}
+		}
+	}
+#endif
 	assert(LODModels.Num() == LODInfo.Num());
 	for (int lod = 0; lod < LODModels.Num(); lod++)
 	{
