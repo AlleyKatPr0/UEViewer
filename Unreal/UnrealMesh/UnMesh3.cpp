@@ -15,6 +15,10 @@
 #include "Mesh/StaticMesh.h"
 #include "TypeConvert.h"
 
+#if DUST514
+#	include "UnMesh3_Dust514_PS3.h"
+#endif
+
 
 //#define DEBUG_SKELMESH		1
 //#define DEBUG_STATICMESH		1
@@ -2094,7 +2098,26 @@ after_skeleton:
 #if 0
 	//!! also: NameIndexMap (ArVer >= 296), PerPolyKDOPs (ArVer >= 435)
 #else
-	DROP_REMAINING_DATA(Ar);
+#if DUST514
+	if (Ar.Game == GAME_Dust514 && Ar.Platform == PLATFORM_PS3 && Ar.IsLoading)
+	{
+		int Remaining = Ar.GetStopper() - Ar.Tell();
+		if (Remaining > 0)
+		{
+			DustPs3Payload.Empty(Remaining);
+			DustPs3Payload.AddUninitialized(Remaining);
+			Ar.Serialize(DustPs3Payload.GetData(), Remaining);
+		}
+		else
+		{
+			DustPs3Payload.Empty();
+		}
+	}
+	else
+#endif // DUST514
+	{
+		DROP_REMAINING_DATA(Ar);
+	}
 #endif
 
 	unguard;
@@ -2114,6 +2137,10 @@ void USkeletalMesh3::ConvertMesh()
 	ConvertedMesh = Mesh;
 
 	int ArGame = GetGame();
+#if DUST514
+	const FArchive* PackageAr = GetPackageArchive();
+	const bool bDust514Ps3 = (ArGame == GAME_Dust514) && PackageAr && (PackageAr->Platform == PLATFORM_PS3) && (DustPs3Payload.Num() > 0);
+#endif
 
 #if MKVSDC
 	if (ArGame == GAME_MK && Skeleton != NULL && RefSkeleton.Num() == 0)
@@ -2167,70 +2194,334 @@ void USkeletalMesh3::ConvertMesh()
 		Lod->HasNormals   = true;
 		Lod->HasTangents  = true;
 
+#if DUST514
+		bool bDustDecodedLod = false;
+#endif
 		guard(ProcessVerts);
 
-		// get vertex count and determine vertex source
-		int VertexCount = SrcLod.GPUSkin.GetVertexCount();
-		bool UseGpuSkinVerts = (VertexCount > 0);
-		if (!VertexCount)
+#if DUST514
+		if (bDust514Ps3 && lod == 0)
 		{
-			const FSkelMeshChunk3 &C = SrcLod.Chunks[SrcLod.Chunks.Num() - 1];		// last chunk
-			VertexCount = C.FirstVertex + C.NumRigidVerts + C.NumSoftVerts;
-		}
-		// allocate the vertices
-		Lod->AllocateVerts(VertexCount);
-		if (SrcLod.VertexColor.Num() == VertexCount)
-			Lod->AllocateVertexColorBuffer();
-		else if (SrcLod.VertexColor.Num())
-			appPrintf("LOD %d has invalid vertex color stream\n", lod);
-
-		int chunkIndex = 0;
-		const FSkelMeshChunk3 *C = NULL;
-		int lastChunkVertex = -1;
-		const FSkeletalMeshVertexBuffer3 &S = SrcLod.GPUSkin;
-		CSkelMeshVertex *D = Lod->Verts;
-		int NumReweightedVerts = 0;
-
-		for (int Vert = 0; Vert < VertexCount; Vert++, D++)
-		{
-			if (Vert >= lastChunkVertex)
+			const int VertexCount = SrcLod.NumVertices;
+			if (VertexCount > 0)
 			{
-				// proceed to next chunk
-				C = &SrcLod.Chunks[chunkIndex++];
-				lastChunkVertex = C->FirstVertex + C->NumRigidVerts + C->NumSoftVerts;
-			}
+				int IndexCount = 0;
+				for (int Sec = 0; Sec < SrcLod.Sections.Num(); Sec++)
+					IndexCount += SrcLod.Sections[Sec].NumTriangles * 3;
 
-			if (Lod->VertexColors)
-				Lod->VertexColors[Vert] = SrcLod.VertexColor[Vert];
+				const int64 PosSize = int64(VertexCount) * 4;
+				const int64 SkinSize = int64(VertexCount) * 8;
+				const int64 PayloadSize = DustPs3Payload.Num();
 
-			if (UseGpuSkinVerts)
-			{
-				// NOTE: Gears3 has some issues:
-				// - chunk may have FirstVertex set to incorrect value (for recent UE3 versions), which overlaps with the
-				//   previous chunk (FirstVertex=0 for a few chunks)
-				// - index count may be greater than sum of all face counts * 3 from all mesh sections -- this is verified in PSK exporter
-
-				// get vertex from GPU skin
-				const FGPUVert3Common *V;		// has normal and influences, but no UV[] and position
-
-				if (!S.bUseFullPrecisionUVs)
+				if (IndexCount > 0 && PayloadSize >= PosSize + SkinSize + 8)
 				{
-					// position
-					const FMeshUVHalf *SUV;
-					if (!S.bUsePackedPosition)
+					const byte* Payload = DustPs3Payload.GetData();
+					const byte* PosData = Payload;
+					const byte* SkinData = Payload + PosSize;
+					const byte* IndexData = Payload + PosSize + SkinSize;
+					const int IndexDataSize = int(PayloadSize - PosSize - SkinSize);
+
+					const char* DecodeError = NULL;
+					TArray<FVector> DecodedPositions;
+					TArray<FDust514Ps3Fixed8SkinRecord> DecodedSkin;
+					TArray<uint32> DecodedIndices;
+
+					const bool bPosOk = DecodeDust514Ps3PackedPositions_X11Y11Z10N(
+						PosData, int(PosSize), VertexCount,
+						Bounds.BoxExtent, Bounds.Origin,
+						DecodedPositions,
+						&DecodeError
+					);
+
+					const bool bSkinOk = bPosOk && DecodeDust514Ps3Fixed8SkinRecords(
+						SkinData, int(SkinSize), VertexCount,
+						DecodedSkin,
+						&DecodeError
+					);
+
+					bool bIndexOk = false;
+					if (bSkinOk)
 					{
-						const FGPUVert3Half &V0 = S.VertsHalf[Vert];
+						const int ScanLimit = (IndexDataSize < 4096) ? IndexDataSize : 4096;
+						for (int Offset = 0; Offset + 5 <= ScanLimit; Offset++)
+						{
+							if (DecodeDust514Ps3EdgeIndexBlock(IndexData + Offset, IndexDataSize - Offset, IndexCount, VertexCount, DecodedIndices, NULL))
+							{
+								bIndexOk = true;
+								break;
+							}
+						}
+						if (!bIndexOk)
+						{
+							const int PayloadScanLimit = (PayloadSize < 16384) ? int(PayloadSize) : 16384;
+							for (int Offset = 0; Offset + 5 <= PayloadScanLimit; Offset++)
+							{
+								if (DecodeDust514Ps3EdgeIndexBlock(Payload + Offset, int(PayloadSize) - Offset, IndexCount, VertexCount, DecodedIndices, NULL))
+								{
+									bIndexOk = true;
+									break;
+								}
+							}
+						}
+					}
+
+					if (bPosOk && bSkinOk && bIndexOk)
+					{
+						Lod->NumTexCoords = 1;
+						Lod->HasNormals = false;
+						Lod->HasTangents = false;
+						Lod->AllocateVerts(VertexCount);
+						memset(Lod->Verts, 0, sizeof(CSkelMeshVertex) * VertexCount);
+
+						int chunkIndex = 0;
+						const FSkelMeshChunk3* C = NULL;
+						int lastChunkVertex = -1;
+
+						for (int Vert = 0; Vert < VertexCount; Vert++)
+						{
+							if (Vert >= lastChunkVertex)
+							{
+								C = (chunkIndex < SrcLod.Chunks.Num()) ? &SrcLod.Chunks[chunkIndex++] : NULL;
+								lastChunkVertex = C ? (C->FirstVertex + C->NumRigidVerts + C->NumSoftVerts) : VertexCount;
+							}
+
+							CSkelMeshVertex& DV = Lod->Verts[Vert];
+							DV.UV.U = 0;
+							DV.UV.V = 0;
+							DV.Position = CVT(DecodedPositions[Vert]);
+
+							const FDust514Ps3Fixed8SkinRecord& SI = DecodedSkin[Vert];
+
+							int i2 = 0;
+							unsigned PackedWeights = 0;
+							for (int i = 0; i < NUM_INFLUENCES_UE3; i++)
+							{
+								const byte W = SI.Weight[i];
+								if (W == 0) continue;
+								const int LocalBone = SI.Index[i];
+								PackedWeights |= W << (i2 * 8);
+								if (C && LocalBone >= 0 && LocalBone < C->Bones.Num())
+									DV.Bone[i2] = C->Bones[LocalBone];
+								else
+									DV.Bone[i2] = LocalBone;
+								i2++;
+							}
+							DV.PackedWeights = PackedWeights;
+							if (i2 < NUM_INFLUENCES_UE3) DV.Bone[i2] = INDEX_NONE;
+						}
+
+						const int DecodedIndexCount = DecodedIndices.Num();
+						if (VertexCount < 65536)
+						{
+							Lod->Indices.Indices16.Empty(DecodedIndexCount);
+							Lod->Indices.Indices16.AddUninitialized(DecodedIndexCount);
+							for (int i = 0; i < DecodedIndexCount; i++)
+								Lod->Indices.Indices16[i] = (uint16)DecodedIndices[i];
+						}
+						else
+						{
+							Lod->Indices.Indices32.Empty(DecodedIndexCount);
+							Lod->Indices.Indices32.AddUninitialized(DecodedIndexCount);
+							for (int i = 0; i < DecodedIndexCount; i++)
+								Lod->Indices.Indices32[i] = DecodedIndices[i];
+						}
+
+						Lod->Sections.Empty(SrcLod.Sections.Num() ? SrcLod.Sections.Num() : 1);
+						const FSkeletalMeshLODInfo& Info = LODInfo[lod];
+						if (SrcLod.Sections.Num())
+						{
+							for (int Sec = 0; Sec < SrcLod.Sections.Num(); Sec++)
+							{
+								const FSkelMeshSection3& S = SrcLod.Sections[Sec];
+								CMeshSection* Dst = new (Lod->Sections) CMeshSection;
+
+								int MaterialIndex = S.MaterialIndex;
+								if (MaterialIndex >= 0 && MaterialIndex < Info.LODMaterialMap.Num())
+									MaterialIndex = Info.LODMaterialMap[MaterialIndex];
+
+								Dst->Material = (MaterialIndex < Materials.Num()) ? Materials[MaterialIndex] : NULL;
+								Dst->FirstIndex = S.FirstIndex;
+								Dst->NumFaces = S.NumTriangles;
+							}
+						}
+						else
+						{
+							CMeshSection* Dst = new (Lod->Sections) CMeshSection;
+							Dst->Material = (Materials.Num() > 0) ? Materials[0] : NULL;
+							Dst->FirstIndex = 0;
+							Dst->NumFaces = DecodedIndexCount / 3;
+						}
+
+						bDustDecodedLod = true;
+					}
+					else if (DecodeError)
+					{
+						appNotify("DUST514 PS3: decode failed (%s)", DecodeError);
+					}
+				}
+			}
+		}
+		if (!bDustDecodedLod)
+#endif // DUST514
+		{
+			// get vertex count and determine vertex source
+			int VertexCount = SrcLod.GPUSkin.GetVertexCount();
+			bool UseGpuSkinVerts = (VertexCount > 0);
+			if (!VertexCount)
+			{
+				const FSkelMeshChunk3 &C = SrcLod.Chunks[SrcLod.Chunks.Num() - 1];		// last chunk
+				VertexCount = C.FirstVertex + C.NumRigidVerts + C.NumSoftVerts;
+			}
+			// allocate the vertices
+			Lod->AllocateVerts(VertexCount);
+			if (SrcLod.VertexColor.Num() == VertexCount)
+				Lod->AllocateVertexColorBuffer();
+			else if (SrcLod.VertexColor.Num())
+				appPrintf("LOD %d has invalid vertex color stream\n", lod);
+
+			int chunkIndex = 0;
+			const FSkelMeshChunk3 *C = NULL;
+			int lastChunkVertex = -1;
+			const FSkeletalMeshVertexBuffer3 &S = SrcLod.GPUSkin;
+			CSkelMeshVertex *D = Lod->Verts;
+			int NumReweightedVerts = 0;
+
+			for (int Vert = 0; Vert < VertexCount; Vert++, D++)
+			{
+				if (Vert >= lastChunkVertex)
+				{
+					// proceed to next chunk
+					C = &SrcLod.Chunks[chunkIndex++];
+					lastChunkVertex = C->FirstVertex + C->NumRigidVerts + C->NumSoftVerts;
+				}
+
+				if (Lod->VertexColors)
+					Lod->VertexColors[Vert] = SrcLod.VertexColor[Vert];
+
+				if (UseGpuSkinVerts)
+				{
+					// NOTE: Gears3 has some issues:
+					// - chunk may have FirstVertex set to incorrect value (for recent UE3 versions), which overlaps with the
+					//   previous chunk (FirstVertex=0 for a few chunks)
+					// - index count may be greater than sum of all face counts * 3 from all mesh sections -- this is verified in PSK exporter
+
+					// get vertex from GPU skin
+					const FGPUVert3Common *V;		// has normal and influences, but no UV[] and position
+
+					if (!S.bUseFullPrecisionUVs)
+					{
+						// position
+						const FMeshUVHalf *SUV;
+						if (!S.bUsePackedPosition)
+						{
+							const FGPUVert3Half &V0 = S.VertsHalf[Vert];
+							D->Position = CVT(V0.Pos);
+							V   = &V0;
+							SUV = V0.UV;
+						}
+						else
+						{
+							const FGPUVert3PackedHalf &V0 = S.VertsHalfPacked[Vert];
+							FVector VPos;
+							VPos = V0.Pos.ToVector(S.MeshOrigin, S.MeshExtension);
+							D->Position = CVT(VPos);
+							V   = &V0;
+							SUV = V0.UV;
+						}
+						// UV
+						FMeshUVFloat fUV = SUV[0];			// convert half->float
+						D->UV = CVT(fUV);
+						for (int TexCoordIndex = 1; TexCoordIndex < NumTexCoords; TexCoordIndex++)
+						{
+							Lod->ExtraUV[TexCoordIndex-1][Vert] = CVT(SUV[TexCoordIndex]);
+						}
+					}
+					else
+					{
+						// position
+						const FMeshUVFloat *SUV;
+						if (!S.bUsePackedPosition)
+						{
+							const FGPUVert3Float &V0 = S.VertsFloat[Vert];
+							V = &V0;
+							D->Position = CVT(V0.Pos);
+							SUV = V0.UV;
+						}
+						else
+						{
+							const FGPUVert3PackedFloat &V0 = S.VertsFloatPacked[Vert];
+							V = &V0;
+							FVector VPos;
+							VPos = V0.Pos.ToVector(S.MeshOrigin, S.MeshExtension);
+							D->Position = CVT(VPos);
+							SUV = V0.UV;
+						}
+						// UV
+						FMeshUVFloat fUV = SUV[0];
+						D->UV = CVT(fUV);
+						for (int TexCoordIndex = 1; TexCoordIndex < NumTexCoords; TexCoordIndex++)
+						{
+							Lod->ExtraUV[TexCoordIndex-1][Vert] = CVT(SUV[TexCoordIndex]);
+						}
+					}
+					// convert Normal[3]
+					UnpackNormals(V->Normal, *D);
+					// convert influences
+					int i2 = 0;
+					unsigned PackedWeights = 0;
+					for (int i = 0; i < NUM_INFLUENCES_UE3; i++)
+					{
+						int BoneIndex  = V->BoneIndex[i];
+						byte BoneWeight = V->BoneWeight[i];
+						if (BoneWeight == 0) continue;				// skip this influence (but do not stop the loop!)
+						PackedWeights |= BoneWeight << (i2 * 8);
+						D->Bone[i2]   = C->Bones[BoneIndex];
+						i2++;
+					}
+					D->PackedWeights = PackedWeights;
+					if (i2 < NUM_INFLUENCES_UE3) D->Bone[i2] = INDEX_NONE; // mark end of list
+				}
+				else
+				{
+					// old UE3 version without a GPU skin
+					// get vertex from chunk
+					const FMeshUVFloat *SUV;
+					if (Vert < C->FirstVertex + C->NumRigidVerts)
+					{
+						// rigid vertex
+						const FRigidVertex3 &V0 = C->RigidVerts[Vert - C->FirstVertex];
+						// position and normal
 						D->Position = CVT(V0.Pos);
-						V   = &V0;
+						UnpackNormals(V0.Normal, *D);
+						// single influence
+						D->PackedWeights = 0xFF;
+						D->Bone[0]   = C->Bones[V0.BoneIndex];
 						SUV = V0.UV;
 					}
 					else
 					{
-						const FGPUVert3PackedHalf &V0 = S.VertsHalfPacked[Vert];
-						FVector VPos;
-						VPos = V0.Pos.ToVector(S.MeshOrigin, S.MeshExtension);
-						D->Position = CVT(VPos);
-						V   = &V0;
+						// soft vertex
+						const FSoftVertex3 &V0 = C->SoftVerts[Vert - C->FirstVertex - C->NumRigidVerts];
+						// position and normal
+						D->Position = CVT(V0.Pos);
+						UnpackNormals(V0.Normal, *D);
+						// influences
+	//					int TotalWeight = 0;
+						int i2 = 0;
+						unsigned PackedWeights = 0;
+						for (int i = 0; i < NUM_INFLUENCES_UE3; i++)
+						{
+							int BoneIndex  = V0.BoneIndex[i];
+							byte BoneWeight = V0.BoneWeight[i];
+							if (BoneWeight == 0) continue;
+							PackedWeights |= BoneWeight << (i2 * 8);
+							D->Bone[i2]   = C->Bones[BoneIndex];
+							i2++;
+	//						TotalWeight += BoneWeight;
+						}
+						D->PackedWeights = PackedWeights;
+	//					assert(TotalWeight == 255);
+						if (i2 < NUM_INFLUENCES_UE3) D->Bone[i2] = INDEX_NONE; // mark end of list
 						SUV = V0.UV;
 					}
 					// UV
@@ -2241,133 +2532,43 @@ void USkeletalMesh3::ConvertMesh()
 						Lod->ExtraUV[TexCoordIndex-1][Vert] = CVT(SUV[TexCoordIndex]);
 					}
 				}
-				else
-				{
-					// position
-					const FMeshUVFloat *SUV;
-					if (!S.bUsePackedPosition)
-					{
-						const FGPUVert3Float &V0 = S.VertsFloat[Vert];
-						V = &V0;
-						D->Position = CVT(V0.Pos);
-						SUV = V0.UV;
-					}
-					else
-					{
-						const FGPUVert3PackedFloat &V0 = S.VertsFloatPacked[Vert];
-						V = &V0;
-						FVector VPos;
-						VPos = V0.Pos.ToVector(S.MeshOrigin, S.MeshExtension);
-						D->Position = CVT(VPos);
-						SUV = V0.UV;
-					}
-					// UV
-					FMeshUVFloat fUV = SUV[0];
-					D->UV = CVT(fUV);
-					for (int TexCoordIndex = 1; TexCoordIndex < NumTexCoords; TexCoordIndex++)
-					{
-						Lod->ExtraUV[TexCoordIndex-1][Vert] = CVT(SUV[TexCoordIndex]);
-					}
-				}
-				// convert Normal[3]
-				UnpackNormals(V->Normal, *D);
-				// convert influences
-				int i2 = 0;
-				unsigned PackedWeights = 0;
-				for (int i = 0; i < NUM_INFLUENCES_UE3; i++)
-				{
-					int BoneIndex  = V->BoneIndex[i];
-					byte BoneWeight = V->BoneWeight[i];
-					if (BoneWeight == 0) continue;				// skip this influence (but do not stop the loop!)
-					PackedWeights |= BoneWeight << (i2 * 8);
-					D->Bone[i2]   = C->Bones[BoneIndex];
-					i2++;
-				}
-				D->PackedWeights = PackedWeights;
-				if (i2 < NUM_INFLUENCES_UE3) D->Bone[i2] = INDEX_NONE; // mark end of list
 			}
-			else
-			{
-				// old UE3 version without a GPU skin
-				// get vertex from chunk
-				const FMeshUVFloat *SUV;
-				if (Vert < C->FirstVertex + C->NumRigidVerts)
-				{
-					// rigid vertex
-					const FRigidVertex3 &V0 = C->RigidVerts[Vert - C->FirstVertex];
-					// position and normal
-					D->Position = CVT(V0.Pos);
-					UnpackNormals(V0.Normal, *D);
-					// single influence
-					D->PackedWeights = 0xFF;
-					D->Bone[0]   = C->Bones[V0.BoneIndex];
-					SUV = V0.UV;
-				}
-				else
-				{
-					// soft vertex
-					const FSoftVertex3 &V0 = C->SoftVerts[Vert - C->FirstVertex - C->NumRigidVerts];
-					// position and normal
-					D->Position = CVT(V0.Pos);
-					UnpackNormals(V0.Normal, *D);
-					// influences
-//					int TotalWeight = 0;
-					int i2 = 0;
-					unsigned PackedWeights = 0;
-					for (int i = 0; i < NUM_INFLUENCES_UE3; i++)
-					{
-						int BoneIndex  = V0.BoneIndex[i];
-						byte BoneWeight = V0.BoneWeight[i];
-						if (BoneWeight == 0) continue;
-						PackedWeights |= BoneWeight << (i2 * 8);
-						D->Bone[i2]   = C->Bones[BoneIndex];
-						i2++;
-//						TotalWeight += BoneWeight;
-					}
-					D->PackedWeights = PackedWeights;
-//					assert(TotalWeight == 255);
-					if (i2 < NUM_INFLUENCES_UE3) D->Bone[i2] = INDEX_NONE; // mark end of list
-					SUV = V0.UV;
-				}
-				// UV
-				FMeshUVFloat fUV = SUV[0];			// convert half->float
-				D->UV = CVT(fUV);
-				for (int TexCoordIndex = 1; TexCoordIndex < NumTexCoords; TexCoordIndex++)
-				{
-					Lod->ExtraUV[TexCoordIndex-1][Vert] = CVT(SUV[TexCoordIndex]);
-				}
-			}
-		}
 
-		if (NumReweightedVerts > 0)
-			appPrintf("LOD %d: adjusted weights for %d vertices\n", lod, NumReweightedVerts);
+			if (NumReweightedVerts > 0)
+				appPrintf("LOD %d: adjusted weights for %d vertices\n", lod, NumReweightedVerts);
+		}
 
 		unguard;	// ProcessVerts
 
-		// indices
-		Lod->Indices.Initialize(&SrcLod.IndexBuffer.Indices16, &SrcLod.IndexBuffer.Indices32);
-
-		// sections
-		guard(ProcessSections);
-		Lod->Sections.Empty(SrcLod.Sections.Num());
-		const FSkeletalMeshLODInfo &Info = LODInfo[lod];
-
-		for (int Sec = 0; Sec < SrcLod.Sections.Num(); Sec++)
+#if DUST514
+		if (!bDustDecodedLod)
+#endif
 		{
-			const FSkelMeshSection3 &S = SrcLod.Sections[Sec];
-			CMeshSection *Dst = new (Lod->Sections) CMeshSection;
+			// indices
+			Lod->Indices.Initialize(&SrcLod.IndexBuffer.Indices16, &SrcLod.IndexBuffer.Indices32);
 
-			// remap material for LOD
-			int MaterialIndex = S.MaterialIndex;
-			if (MaterialIndex >= 0 && MaterialIndex < Info.LODMaterialMap.Num())
-				MaterialIndex = Info.LODMaterialMap[MaterialIndex];
+			// sections
+			guard(ProcessSections);
+			Lod->Sections.Empty(SrcLod.Sections.Num());
+			const FSkeletalMeshLODInfo &Info = LODInfo[lod];
 
-			Dst->Material   = (MaterialIndex < Materials.Num()) ? Materials[MaterialIndex] : NULL;
-			Dst->FirstIndex = S.FirstIndex;
-			Dst->NumFaces   = S.NumTriangles;
+			for (int Sec = 0; Sec < SrcLod.Sections.Num(); Sec++)
+			{
+				const FSkelMeshSection3 &S = SrcLod.Sections[Sec];
+				CMeshSection *Dst = new (Lod->Sections) CMeshSection;
+
+				// remap material for LOD
+				int MaterialIndex = S.MaterialIndex;
+				if (MaterialIndex >= 0 && MaterialIndex < Info.LODMaterialMap.Num())
+					MaterialIndex = Info.LODMaterialMap[MaterialIndex];
+
+				Dst->Material   = (MaterialIndex < Materials.Num()) ? Materials[MaterialIndex] : NULL;
+				Dst->FirstIndex = S.FirstIndex;
+				Dst->NumFaces   = S.NumTriangles;
+			}
+
+			unguard;	// ProcessSections
 		}
-
-		unguard;	// ProcessSections
 
 		unguardf("lod=%d", lod); // ConvertLod
 	}

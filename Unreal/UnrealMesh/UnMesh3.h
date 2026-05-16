@@ -232,6 +232,10 @@ public:
 	bool					bHasVertexColors;
 	TArray<UMaterialInterface*> Materials;
 	TArray<FStaticLODModel3> LODModels;
+#if DUST514
+	// Raw trailing payload for DUST 514 PS3 meshes (Edge/streamed render data).
+	TArray<byte>				DustPs3Payload;
+#endif
 #if BATMAN
 	// Batman 2
 	bool					EnableTwistBoneFixers;
