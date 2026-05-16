@@ -10,6 +10,10 @@ The current work is grounded in the uploaded PlayStation Edge geometry sources a
 4. wrapper packed position stream;
 5. wrapper fixed8 skin records.
 
+Current status in UEViewer:
+
+- PS3 DUST skeletal meshes do not deserialize inline UE3 `FStaticLODModel3` data. `USkeletalMesh3::Serialize` skips `LODModels` for `GAME_Dust514`/PS3 (licensee ver 35+) to avoid desync/stopper overruns, and the geometry decode must come from the streamed `.MSH` wrapper instead (`Unreal/UnrealMesh/UnMesh3.cpp`).
+
 The DUST reference exporter identifies three initial targets:
 
 - `CH_1P_CA_Assault_SKM`
