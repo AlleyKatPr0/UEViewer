@@ -1566,6 +1566,16 @@ void FByteBulkData::SerializeDataChunk(FArchive &Ar)
 		Ar.Serialize(BulkData, DataSize);
 	}
 
+	// UE3 bulk data has the same endianness as the owning archive. If the package is big-endian
+	// (PS3/Xbox360), data was just copied verbatim into memory and should be byte-swapped so the
+	// in-memory representation matches host endianness.
+	const int ElementSize = GetElementSize();
+	if (ElementSize > 1 && Ar.ReverseBytes)
+	{
+		assert(Ar.IsLoading);
+		appReverseBytes(BulkData, ElementCount, ElementSize);
+	}
+
 	unguard;
 }
 
