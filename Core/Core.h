@@ -31,6 +31,24 @@
 
 #include "Build.h"
 
+#if defined(__has_include)
+#	ifndef __APPLE__
+#		if __has_include(<GL/gl.h>) && __has_include(<GL/glext.h>)
+#			define UMODEL_HAS_OPENGL_HEADERS	1
+#		else
+#			define UMODEL_HAS_OPENGL_HEADERS	0
+#		endif
+#	else
+#		if __has_include(<OpenGL/gl.h>) && __has_include(<OpenGL/glext.h>)
+#			define UMODEL_HAS_OPENGL_HEADERS	1
+#		else
+#			define UMODEL_HAS_OPENGL_HEADERS	0
+#		endif
+#	endif
+#else
+#	define UMODEL_HAS_OPENGL_HEADERS		1
+#endif
+
 #if RENDERING
 #	define SDL_MAIN_HANDLED			// prevent overriding of 'main' function on Windows
 #	if defined(__has_include)
@@ -48,6 +66,10 @@
 
 #ifndef UMODEL_HAS_SDL2
 #define UMODEL_HAS_SDL2				0
+#endif
+
+#ifndef UMODEL_HAS_OPENGL_HEADERS
+#define UMODEL_HAS_OPENGL_HEADERS	0
 #endif
 
 #define VECTOR_ARG(v)			(v).X, (v).Y, (v).Z

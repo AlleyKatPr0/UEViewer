@@ -8,6 +8,7 @@
 #endif
 
 #include <errno.h>				// not needed for VC
+#include <climits>
 
 #if _WIN32
 #include <io.h>					// for _filelengthi64
