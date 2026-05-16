@@ -33,7 +33,21 @@
 
 #if RENDERING
 #	define SDL_MAIN_HANDLED			// prevent overriding of 'main' function on Windows
-#	include <SDL2/SDL.h>			//?? move outside (here for SDL_GetTicks() only?)
+#	if defined(__has_include)
+#		if __has_include(<SDL2/SDL.h>)
+#			include <SDL2/SDL.h>	//?? move outside (here for SDL_GetTicks() only?)
+#			define UMODEL_HAS_SDL2	1
+#		else
+#			define UMODEL_HAS_SDL2	0
+#		endif
+#	else
+#		include <SDL2/SDL.h>		//?? move outside (here for SDL_GetTicks() only?)
+#		define UMODEL_HAS_SDL2		1
+#	endif
+#endif
+
+#ifndef UMODEL_HAS_SDL2
+#define UMODEL_HAS_SDL2				0
 #endif
 
 #define VECTOR_ARG(v)			(v).X, (v).Y, (v).Z

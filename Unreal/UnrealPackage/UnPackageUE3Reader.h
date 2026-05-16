@@ -68,8 +68,15 @@ public:
 	{
 		guard(FUE3ArchiveReader::Serialize);
 
-		if (Stopper > 0 && Position + size > Stopper)
-			appError("Serializing behind stopper (%X+%X > %X)", Position, size, Stopper);
+		if (size < 0)
+			appError("Negative serialize size (%X, pos=%X)", size, Position);
+
+		if (Stopper > 0)
+		{
+			int64 EndPos = (int64)Position + size;
+			if (EndPos > Stopper)
+				appError("Serializing behind stopper (%X+%X > %X)", Position, size, Stopper);
+		}
 
 		while (true)
 		{
@@ -96,15 +103,25 @@ public:
 	void PrepareBuffer(int Pos)
 	{
 		guard(FUE3ArchiveReader::PrepareBuffer);
+		if (Pos < 0)
+			appError("Negative position in PrepareBuffer (%X)", Pos);
 		// find compressed chunk
 		const FCompressedChunk *Chunk = NULL;
 		for (int ChunkIndex = 0; ChunkIndex < CompressedChunks.Num(); ChunkIndex++)
 		{
-			Chunk = &CompressedChunks[ChunkIndex];
-			if (Pos < Chunk->UncompressedOffset + Chunk->UncompressedSize)
+			const FCompressedChunk* CandidateChunk = &CompressedChunks[ChunkIndex];
+			if (Pos < CandidateChunk->UncompressedOffset + CandidateChunk->UncompressedSize)
+			{
+				Chunk = CandidateChunk;
 				break;
+			}
 		}
-		assert(Chunk); // should be at least 1 chunk in CompressedChunks
+		if (!Chunk)
+		{
+			const FCompressedChunk& LastChunk = CompressedChunks.Last();
+			appError("Preparing buffer behind end of chunk data (%X >= %X)",
+				Pos, LastChunk.UncompressedOffset + LastChunk.UncompressedSize);
+		}
 
 		// DC Universe has uncompressed package headers but compressed remaining package part
 		if (Pos < Chunk->UncompressedOffset)
@@ -160,17 +177,24 @@ public:
 		// find block in ChunkHeader.Blocks
 		int ChunkPosition = Chunk->UncompressedOffset;
 		int ChunkData     = ChunkDataPos;
-		assert(ChunkPosition <= Pos);
+		if (ChunkPosition > Pos)
+			appError("Invalid chunk position (%X > %X)", ChunkPosition, Pos);
 		const FCompressedChunkBlock *Block = NULL;
 		for (int BlockIndex = 0; BlockIndex < ChunkHeader.Blocks.Num(); BlockIndex++)
 		{
-			Block = &ChunkHeader.Blocks[BlockIndex];
-			if (ChunkPosition + Block->UncompressedSize > Pos)
+			const FCompressedChunkBlock* CandidateBlock = &ChunkHeader.Blocks[BlockIndex];
+			if (Pos < ChunkPosition + CandidateBlock->UncompressedSize)
+			{
+				Block = CandidateBlock;
 				break;
-			ChunkPosition += Block->UncompressedSize;
-			ChunkData     += Block->CompressedSize;
+			}
+			ChunkPosition += CandidateBlock->UncompressedSize;
+			ChunkData     += CandidateBlock->CompressedSize;
 		}
-		assert(Block);
+		if (!Block)
+			appError("Position %X is behind compressed chunk blocks (%X..%X)", Pos, Chunk->UncompressedOffset, Chunk->UncompressedOffset + Chunk->UncompressedSize);
+		if (Block->CompressedSize <= 0 || Block->UncompressedSize <= 0)
+			appError("Invalid compressed block sizes (comp=%X uncomp=%X)", Block->CompressedSize, Block->UncompressedSize);
 		// read compressed data
 		//?? optimize? can share compressed buffer and decompressed buffer between packages
 		byte *CompressedBlock = new byte[Block->CompressedSize];
@@ -192,7 +216,26 @@ public:
 #if BATMAN
 			if (Game == GAME_Batman4 && CompressionFlags == 8) UsedCompressionFlags = COMPRESS_LZ4;
 #endif
-			appDecompress(CompressedBlock, Block->CompressedSize, Buffer, Block->UncompressedSize, UsedCompressionFlags);
+			bool bDecompressed = false;
+			if (UsedCompressionFlags != COMPRESS_FIND)
+			{
+				TRY
+				{
+					appDecompress(CompressedBlock, Block->CompressedSize, Buffer, Block->UncompressedSize, UsedCompressionFlags);
+					bDecompressed = true;
+				}
+				CATCH
+				{
+					GError.Reset();
+					UsedCompressionFlags = COMPRESS_FIND;
+				}
+			}
+			if (!bDecompressed)
+			{
+				appDecompress(CompressedBlock, Block->CompressedSize, Buffer, Block->UncompressedSize, UsedCompressionFlags);
+				if (CompressionFlags != UsedCompressionFlags)
+					CompressionFlags = UsedCompressionFlags;
+			}
 		}
 		else
 		{
