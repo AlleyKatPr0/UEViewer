@@ -73,6 +73,9 @@ be initiated with launching
 ### Linux
 Linux system has the most of dependencies by default. You'll need to install the following development packages if they're
 not available on your system: SDL2, zlib, libpng. Of course, you'll also need gcc for compiling the project.
+On Debian/Ubuntu, this typically means:
+
+    sudo apt-get install libsdl2-dev zlib1g-dev libpng-dev
 To build UE Viewer, simply execute the following command from terminal
 
     ./build.sh
