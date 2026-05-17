@@ -2,6 +2,10 @@
 
 This document records the UEViewer changes required for PlayStation 3 skeletal meshes from DUST 514.
 
+For a higher-level hand-off (code map, current integration gaps, repro workflow), see:
+
+- `Docs/PS3_SkeletalMesh_Handoff.md`
+
 The current work is grounded in the uploaded PlayStation Edge geometry sources and the local DUST skeletal reconstruction probes. The relevant observed pipeline is:
 
 1. package skeletal metadata: bones, hierarchy, sockets and material context;
@@ -9,6 +13,10 @@ The current work is grounded in the uploaded PlayStation Edge geometry sources a
 3. page-local Edge compressed index payloads;
 4. wrapper packed position stream;
 5. wrapper fixed8 skin records.
+
+Current status in UEViewer:
+
+- PS3 DUST skeletal meshes do not deserialize inline UE3 `FStaticLODModel3` data. `USkeletalMesh3::Serialize` skips `LODModels` for `GAME_Dust514`/PS3 (licensee ver 35+) to avoid desync/stopper overruns, and the geometry decode must come from the streamed `.MSH` wrapper instead (`Unreal/UnrealMesh/UnMesh3.cpp`).
 
 The DUST reference exporter identifies three initial targets:
 
@@ -86,6 +94,16 @@ static bool DecodeDustEdgeIndexBlock(
 ```
 
 This function should be isolated so it can be tested independently against known DUST `.MSH` page payloads.
+
+Current implementation lives in:
+
+- `Unreal/UnrealMesh/UnMesh3_Dust514_PS3.cpp`
+- `Unreal/UnrealMesh/UnMesh3_Dust514_PS3.h`
+
+Notes:
+
+- `FDust514Ps3SkeletalMeshDecoder::DecodeEdgeIndexBlock(...)` expects the inline Edge header+seeds format, but will also scan the first 64 bytes for a valid inner header when the wrapper prefixes the payload with page metadata.
+- If the `.MSH` page table stores `bitsPerIndex`, `deltaOffset`, and seed indices externally (not inline), use `FDust514Ps3SkeletalMeshDecoder::DecodeEdgeIndexPayload(...)` with the extracted header fields and pass only the bit-packed delta payload.
 
 ### 4. Fixed8 skin record decode
 

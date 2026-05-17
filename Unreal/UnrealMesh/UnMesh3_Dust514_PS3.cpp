@@ -191,16 +191,21 @@ bool DecodeDust514Ps3Fixed8SkinRecords(
 	return true;
 }
 
-bool DecodeDust514Ps3EdgeIndexBlock(
+static bool ParseInlineEdgeIndexHeader(
 	const byte* Data,
 	int DataSize,
 	int IndexCount,
 	int VertexLimit,
-	TArray<uint32>& OutIndices,
+	FDust514Ps3EdgeIndexBlockHeader& OutHeader,
+	int& OutDeltaByteOffset,
 	const char** OutError
 )
 {
-	OutIndices.Empty();
+	OutHeader.BitsPerIndex = 0;
+	OutHeader.DeltaOffset = 0;
+	OutHeader.SeedCount = 0;
+	for (int i = 0; i < 8; ++i) OutHeader.Seeds[i] = 0;
+	OutDeltaByteOffset = 0;
 
 	if (IndexCount <= 0)
 	{
@@ -230,12 +235,7 @@ bool DecodeDust514Ps3EdgeIndexBlock(
 		return false;
 	}
 
-	OutIndices.Empty(IndexCount);
-	OutIndices.AddUninitialized(IndexCount);
-
-	uint32 Previous[8] = { 0,0,0,0,0,0,0,0 };
 	const int SeedCount = (IndexCount < 8) ? IndexCount : 8;
-
 	if (DataSize < Cursor + SeedCount * 2)
 	{
 		SetError(OutError, "index block too small for seed indices");
@@ -246,33 +246,105 @@ bool DecodeDust514Ps3EdgeIndexBlock(
 	{
 		const uint32 Seed = ReadU16BE(Data + Cursor);
 		Cursor += 2;
-
 		if (Seed >= (uint32)VertexLimit)
 		{
 			SetError(OutError, "seed index exceeds vertex limit");
 			return false;
 		}
+		OutHeader.Seeds[i] = Seed;
+	}
 
+	const int DeltaCount = (IndexCount > 8) ? (IndexCount - 8) : 0;
+	const int64 RequiredBits = int64(DeltaCount) * int64(BitsPerIndex);
+	const int RequiredBytes = int((RequiredBits + 7) / 8);
+	if (DataSize < Cursor + RequiredBytes)
+	{
+		SetError(OutError, "index block is smaller than expected for deltas");
+		return false;
+	}
+
+	OutHeader.BitsPerIndex = BitsPerIndex;
+	OutHeader.DeltaOffset = DeltaOffset;
+	OutHeader.SeedCount = SeedCount;
+	OutDeltaByteOffset = Cursor;
+	return true;
+}
+
+bool DecodeDust514Ps3EdgeIndexPayload(
+	const byte* DeltaData,
+	int DeltaDataSize,
+	int IndexCount,
+	int VertexLimit,
+	const FDust514Ps3EdgeIndexBlockHeader& Header,
+	TArray<uint32>& OutIndices,
+	const char** OutError
+)
+{
+	OutIndices.Empty();
+
+	if (IndexCount <= 0)
+	{
+		return true;
+	}
+
+	if (!DeltaData && Header.BitsPerIndex != 0 && IndexCount > 8)
+	{
+		SetError(OutError, "null delta data");
+		return false;
+	}
+
+	if (Header.SeedCount <= 0)
+	{
+		SetError(OutError, "missing seed indices");
+		return false;
+	}
+
+	if (Header.BitsPerIndex > 31)
+	{
+		SetError(OutError, "invalid bits-per-index");
+		return false;
+	}
+
+	OutIndices.Empty(IndexCount);
+	OutIndices.AddUninitialized(IndexCount);
+
+	uint32 Previous[8] = { 0,0,0,0,0,0,0,0 };
+	int SeedCount = Header.SeedCount;
+	if (SeedCount > IndexCount) SeedCount = IndexCount;
+	if (SeedCount > 8) SeedCount = 8;
+	if (IndexCount > 8 && SeedCount < 8)
+	{
+		SetError(OutError, "insufficient seed indices for delta decode");
+		return false;
+	}
+
+	for (int i = 0; i < SeedCount; i++)
+	{
+		const uint32 Seed = Header.Seeds[i];
+		if (Seed >= (uint32)VertexLimit)
+		{
+			SetError(OutError, "seed index exceeds vertex limit");
+			return false;
+		}
 		OutIndices[i] = Seed;
 		Previous[i] = Seed;
 	}
 
-	int BitOffset = Cursor * 8;
+	int BitOffset = 0;
 	for (int i = 8; i < IndexCount; i++)
 	{
 		uint32 EncodedDelta = 0;
-		if (BitsPerIndex > 0)
+		if (Header.BitsPerIndex > 0)
 		{
-			if (!ReadBitsHighFirst(Data, DataSize, BitOffset, (int)BitsPerIndex, EncodedDelta))
+			if (!ReadBitsHighFirst(DeltaData, DeltaDataSize, BitOffset, (int)Header.BitsPerIndex, EncodedDelta))
 			{
 				SetError(OutError, "ran out of bits while reading deltas");
 				return false;
 			}
 		}
 
-		const int32 Delta = int32(EncodedDelta) - int32(DeltaOffset);
+		const int32 Delta = int32(EncodedDelta) - int32(Header.DeltaOffset);
 		const int32 Restored = int32(Previous[i & 7]) + Delta;
-
 		if (Restored < 0 || Restored >= VertexLimit)
 		{
 			SetError(OutError, "restored index is outside vertex range");
@@ -287,5 +359,84 @@ bool DecodeDust514Ps3EdgeIndexBlock(
 	return true;
 }
 
-#endif // DUST514
+bool DecodeDust514Ps3EdgeIndexBlock(
+	const byte* Data,
+	int DataSize,
+	int IndexCount,
+	int VertexLimit,
+	TArray<uint32>& OutIndices,
+	const char** OutError
+)
+{
+	OutIndices.Empty();
 
+	if (IndexCount <= 0)
+	{
+		return true;
+	}
+
+	if (!Data)
+	{
+		SetError(OutError, "null index data");
+		return false;
+	}
+
+	FDust514Ps3EdgeIndexBlockHeader Header;
+	int DeltaOffsetBytes = 0;
+	if (ParseInlineEdgeIndexHeader(Data, DataSize, IndexCount, VertexLimit, Header, DeltaOffsetBytes, NULL))
+	{
+		return DecodeDust514Ps3EdgeIndexPayload(
+			Data + DeltaOffsetBytes,
+			DataSize - DeltaOffsetBytes,
+			IndexCount,
+			VertexLimit,
+			Header,
+			OutIndices,
+			OutError
+		);
+	}
+
+	const int SeedCount = (IndexCount < 8) ? IndexCount : 8;
+	const int MinHeaderBytes = 1 + 4 + SeedCount * 2;
+	int MaxSearch = DataSize - MinHeaderBytes;
+	if (MaxSearch < 0) MaxSearch = 0;
+	if (MaxSearch > 64) MaxSearch = 64;
+	for (int Offset = 1; Offset <= MaxSearch; ++Offset)
+	{
+		FDust514Ps3EdgeIndexBlockHeader Candidate;
+		int CandidateDeltaOffset = 0;
+		if (!ParseInlineEdgeIndexHeader(
+			Data + Offset,
+			DataSize - Offset,
+			IndexCount,
+			VertexLimit,
+			Candidate,
+			CandidateDeltaOffset,
+			NULL))
+		{
+			continue;
+		}
+
+		if (DecodeDust514Ps3EdgeIndexPayload(
+			(Data + Offset) + CandidateDeltaOffset,
+			(DataSize - Offset) - CandidateDeltaOffset,
+			IndexCount,
+			VertexLimit,
+			Candidate,
+			OutIndices,
+			NULL))
+		{
+			return true;
+		}
+	}
+
+	if (!ParseInlineEdgeIndexHeader(Data, DataSize, IndexCount, VertexLimit, Header, DeltaOffsetBytes, OutError))
+	{
+		return false;
+	}
+
+	SetError(OutError, "failed to locate a valid Edge index header");
+	return false;
+}
+
+#endif // DUST514
