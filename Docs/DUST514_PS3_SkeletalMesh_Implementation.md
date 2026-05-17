@@ -2,6 +2,10 @@
 
 This document records the UEViewer changes required for PlayStation 3 skeletal meshes from DUST 514.
 
+For a higher-level hand-off (code map, current integration gaps, repro workflow), see:
+
+- `Docs/PS3_SkeletalMesh_Handoff.md`
+
 The current work is grounded in the uploaded PlayStation Edge geometry sources and the local DUST skeletal reconstruction probes. The relevant observed pipeline is:
 
 1. package skeletal metadata: bones, hierarchy, sockets and material context;
