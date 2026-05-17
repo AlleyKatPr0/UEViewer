@@ -3,7 +3,9 @@
 
 
 #if RENDERING
-#	include "CoreGL.h"		//?? for materials only
+#	if UMODEL_HAS_OPENGL_HEADERS
+#		include "CoreGL.h"	//?? for materials only
+#	endif
 #endif
 
 #undef PLATFORM_UNKNOWN		// defined in windows headers

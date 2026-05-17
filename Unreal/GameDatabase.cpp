@@ -579,6 +579,8 @@ void FArchive::DetectGame()
 
 	if (GForcePlatform != PLATFORM_UNKNOWN)
 		Platform = GForcePlatform;
+	else if (ReverseBytes && Platform == PLATFORM_PC)
+		Platform = PLATFORM_XBOX360; // default console platform for big-endian packages
 
 	if (GForceGame != GAME_UNKNOWN)
 	{
@@ -767,7 +769,13 @@ void FArchive::DetectGame()
 	if (ArVer == 706 && ArLicenseeVer == 28)	SET(GAME_ShadowsDamned);
 #endif
 #if DUST514
-	if (ArVer == 708 && ArLicenseeVer == 35)	SET(GAME_Dust514);
+	if (ArVer == 708 && ArLicenseeVer == 35)
+	{
+		SET(GAME_Dust514);
+		// DUST 514 uses UE3 big-endian packages (PS3).
+		if (ReverseBytes && GForcePlatform == PLATFORM_UNKNOWN)
+			Platform = PLATFORM_PS3;
+	}
 #endif
 #if THIEF4
 	if (ArVer == 721 && ArLicenseeVer == 148)	SET(GAME_Thief4);

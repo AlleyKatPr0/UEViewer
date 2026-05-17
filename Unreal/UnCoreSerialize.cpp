@@ -8,6 +8,7 @@
 #endif
 
 #include <errno.h>				// not needed for VC
+#include <climits>
 
 #if _WIN32
 #include <io.h>					// for _filelengthi64
@@ -123,6 +124,14 @@ FArchive& FArray::Serialize(FArchive &Ar, void (*Serializer)(FArchive&, void*), 
 
 	if (Ar.IsLoading)
 	{
+		if (Count < 0)
+			appError("TArray::Serialize: negative array size %d", Count);
+		if (Count && elementSize > 0)
+		{
+			int64 dataSize = (int64)Count * elementSize;
+			if (dataSize > MAX_FILE_SIZE_32)
+				appError("TArray::Serialize: array too large (%lld bytes)", dataSize);
+		}
 		// loading array items - should prepare array
 		Empty(Count, elementSize);
 		DataCount = Count;
@@ -197,6 +206,23 @@ FArchive& FArray::SerializeRaw(FArchive &Ar, void (*Serializer)(FArchive&, void*
 
 	if (Ar.IsLoading)
 	{
+		if (Count < 0)
+			appError("TArray::SerializeRaw: negative array size %d", Count);
+		if (Count && elementSize > 0)
+		{
+			int64 dataSize = (int64)Count * elementSize;
+			if (dataSize > MAX_FILE_SIZE_32)
+				appError("TArray::SerializeRaw: array too large (%lld bytes)", dataSize);
+
+			int limit = Ar.GetStopper();
+			if (!limit) limit = Ar.GetFileSize();
+			if (limit > 0)
+			{
+				int remaining = limit - Ar.Tell();
+				if (remaining >= 0 && dataSize > remaining)
+					appError("TArray::SerializeRaw: data overrun (%lld bytes, remaining %d)", dataSize, remaining);
+			}
+		}
 		// loading array items - should prepare array
 		Empty(Count, elementSize);
 		DataCount = Count;
@@ -226,9 +252,30 @@ FArchive& FArray::SerializeSimple(FArchive &Ar, int NumFields, int FieldSize)
 	else
 		Ar << Count;
 
-	int elementSize = NumFields * FieldSize;
+	if (Count < 0 && Ar.IsLoading)
+		appError("TArray::SerializeSimple: negative array size %d", Count);
+
+	int64 elementSize64 = (int64)NumFields * FieldSize;
+	if (elementSize64 <= 0 || elementSize64 > INT_MAX)
+		appError("TArray::SerializeSimple: invalid element size %lld", elementSize64);
+	int elementSize = (int)elementSize64;
 	if (Ar.IsLoading)
 	{
+		if (Count)
+		{
+			int64 dataSize = (int64)Count * elementSize;
+			if (dataSize > MAX_FILE_SIZE_32)
+				appError("TArray::SerializeSimple: array too large (%lld bytes)", dataSize);
+
+			int limit = Ar.GetStopper();
+			if (!limit) limit = Ar.GetFileSize();
+			if (limit > 0)
+			{
+				int remaining = limit - Ar.Tell();
+				if (remaining >= 0 && dataSize > remaining)
+					appError("TArray::SerializeSimple: data overrun (%lld bytes, remaining %d)", dataSize, remaining);
+			}
+		}
 		// loading array items - should prepare array
 		Empty(Count, elementSize);
 		DataCount = Count;
@@ -1564,6 +1611,16 @@ void FByteBulkData::SerializeDataChunk(FArchive &Ar)
 	{
 		// uncompressed block
 		Ar.Serialize(BulkData, DataSize);
+	}
+
+	// UE3 bulk data has the same endianness as the owning archive. If the package is big-endian
+	// (PS3/Xbox360), data was just copied verbatim into memory and should be byte-swapped so the
+	// in-memory representation matches host endianness.
+	const int ElementSize = GetElementSize();
+	if (ElementSize > 1 && Ar.ReverseBytes)
+	{
+		assert(Ar.IsLoading);
+		appReverseBytes(BulkData, ElementCount, ElementSize);
 	}
 
 	unguard;
